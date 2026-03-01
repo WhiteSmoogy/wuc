@@ -130,22 +130,7 @@ namespace Wuc
         {
             lock (_roslynLock)
             {
-                try
-                {
-                    if (_scriptOptions is IDisposable disposable)
-                    {
-                        disposable.Dispose();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"[Wuc] Roslyn dispose failed: {ex.Message}");
-                }
-                finally
-                {
-                    _scriptOptions = null;
-                }
-
+                _scriptOptions = null;
                 _scriptOptionsType = null;
                 _csharpScriptType = null;
                 _cachedEvaluateSourceTextMethod = null;
@@ -162,7 +147,8 @@ namespace Wuc
                 GC.Collect();
             }
             finally
-            { }
+            { 
+            }
         }
 
         // ── Output / log capture ───────────────────────────────────────────
