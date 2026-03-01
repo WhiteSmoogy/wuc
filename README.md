@@ -6,8 +6,8 @@
 
 ```
 Claude Code
-    │  (wuc skill)
-    │  HTTP  127.0.0.1:23557
+    │  (wuc skill + ~/.wuc/instances discovery)
+    │  HTTP  127.0.0.1:<dynamic-port>
     ▼
 WucServer.cs  [InitializeOnLoad]
     │  main-thread dispatch
@@ -35,8 +35,12 @@ Copy `Assets/Editor/Wuc/` into your own project's `Assets/Editor/` folder.
 After importing, the Wuc HTTP server starts automatically — confirm in the Console:
 
 ```
-[Wuc] Server listening on http://127.0.0.1:23557/
+[Wuc] Server listening on http://127.0.0.1:<port>/ (projectId=..., instanceId=...)
 ```
+
+By default Wuc scans an available port in the range `23557-23657`.
+You can configure range (and optional `projectId` override) in `ProjectSettings/WucSettings.asset`.
+The skill auto-reads this `projectId` override when present.
 
 ### 2. Install the Claude Code skill
 
@@ -62,12 +66,14 @@ show me the last 20 Unity logs
 
 Claude Code will invoke the `wuc` skill automatically when you ask it to interact with Unity.
 
-## HTTP API (port 23557)
+## HTTP API (dynamic port)
 
-The skill communicates with Unity over a simple HTTP API. You can also call it directly:
+The skill discovers Unity via `~/.wuc/instances/*.json`, verifies identity via `/identity`,
+then calls the HTTP API:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/identity` | GET | Return `{ projectId, projectPath, instanceId, pid, port, startedAtUtc }` |
 | `/execute` | POST | Run C# code on the Unity main thread |
 | `/logs` | GET | Fetch recent log entries (`?count=N`, default 100) |
 | `/logs/clear` | POST | Clear the log buffer |
@@ -107,6 +113,7 @@ The last expression in the script is returned as `returnValue`.
 | Path | Role |
 |------|------|
 | `Assets/Editor/Wuc/WucServer.cs` | HTTP server, route dispatch, main-thread queue |
+| `Assets/Editor/Wuc/WucSettings.cs` | Project settings (port range and project ID override) |
 | `Assets/Editor/Wuc/CSharpScriptRunner.cs` | Roslyn executor, persistent log buffer |
 | `Assets/Editor/Wuc/Plugins/` | Roslyn DLLs + System.Text.Json (bundled) |
 | `.claude/skills/wuc/` | Claude Code skill (copy to `~/.claude/skills/`) |

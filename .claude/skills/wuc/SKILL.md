@@ -1,6 +1,6 @@
 ---
 name: wuc
-description: Interact with the running Unity Editor via the Wuc HTTP server (port 23557).
+description: Interact with the running Unity Editor via the Wuc HTTP server (discovered via ~/.wuc/instances).
 allowed-tools: Bash(python *)
 ---
 
@@ -11,6 +11,9 @@ allowed-tools: Bash(python *)
 ```bash
 # check Unity is reachable and see recent logs
 python {skillDir}/wuc/wuc.py logs --count 10
+
+# print selected Unity instance identity
+python {skillDir}/wuc/wuc.py identity
 
 # run a C# expression, get the return value
 python {skillDir}/wuc/wuc.py execute "return Application.unityVersion;"
@@ -30,10 +33,12 @@ python {skillDir}/wuc/wuc.py clear
 python {skillDir}/wuc/wuc.py execute "<C# code>"
 python {skillDir}/wuc/wuc.py execute "<C# code>" --path "Label.csx"
 python {skillDir}/wuc/wuc.py execute "<C# code>" --timeout 10000
+python {skillDir}/wuc/wuc.py --instance-id "<instanceId>" execute "<C# code>"
 ```
 
 - `--path` — virtual filename shown in stack traces (cosmetic only)
 - `--timeout` — execution timeout in milliseconds (default: 30000)
+- `--instance-id` — connect to a specific Unity instance when multiple editors are open
 
 Response fields:
 
@@ -63,6 +68,15 @@ The log buffer holds up to 500 entries and captures all Unity log output for the
 python wuc.py clear
 ```
 
+### Get selected instance identity
+
+```bash
+python wuc.py identity
+python wuc.py --instance-id "<instanceId>" identity
+```
+
+Returns: `{ projectId, projectPath, instanceId, pid, port, startedAtUtc }`.
+
 ## Scripting context
 
 Scripts run via Roslyn (`Microsoft.CodeAnalysis.CSharp.Scripting`) on the Unity main thread.
@@ -85,6 +99,9 @@ log(value)     // calls Debug.Log
 ## Notes
 
 - Unity Editor must be open with the Wuc project loaded. The server starts automatically via `[InitializeOnLoad]`.
+- Unity registers each running editor in `~/.wuc/instances/<instanceId>.json`; the client matches by `projectId` and verifies with `/identity`.
+- `projectId` defaults to a hash of the current project path, and automatically uses `ProjectSettings/WucSettings.asset` override when configured.
+- If multiple Unity editors are running for the same project, commands fail fast unless `--instance-id` is provided.
 - All scripts run on the Unity main thread — avoid blocking calls (e.g. `Thread.Sleep`).
 - If Unity is not running, the command exits immediately with a connection error.
 - Run all commands from `D:\Projects\Wuc`.

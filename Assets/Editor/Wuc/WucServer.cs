@@ -15,10 +15,15 @@ namespace Wuc
     [InitializeOnLoad]
     public static class WucServer
     {
-        public const int Port = 23557;
-
         private static HttpListener _listener;
         private static Thread       _listenerThread;
+        private static int          _boundPort;
+        private static string       _projectId;
+        private static string       _projectPath;
+        private static string       _instanceId;
+        private static int          _processId;
+        private static DateTime     _startedAtUtc;
+        private static string       _registrationFilePath;
 
         // 主线程任务队列：后台线程投递，EditorApplication.update 消费
         private static readonly ConcurrentQueue<(Action work, ManualResetEventSlim gate)>
@@ -28,6 +33,7 @@ namespace Wuc
         {
             EditorApplication.update += DrainMainThreadQueue;
             AssemblyReloadEvents.beforeAssemblyReload += Shutdown;
+            EditorApplication.quitting += Shutdown;
             StartServer();
         }
 
@@ -35,11 +41,25 @@ namespace Wuc
 
         private static void StartServer()
         {
+            if (_listener != null && _listener.IsListening)
+                return;
+
             try
             {
-                _listener = new HttpListener();
-                _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
-                _listener.Start();
+                var settings = WucSettings.LoadOrCreate();
+                _projectPath = WucSettings.NormalizeProjectPath(Path.Combine(Application.dataPath, ".."));
+                _projectId = settings.ResolveProjectId(_projectPath);
+                _instanceId = Guid.NewGuid().ToString("N");
+                _processId = System.Diagnostics.Process.GetCurrentProcess().Id;
+                _startedAtUtc = DateTime.UtcNow;
+
+                if (!TryBindListener(settings.PortRangeStart, settings.PortRangeEnd))
+                {
+                    Debug.LogError(
+                        $"[Wuc] Failed to start server in port range " +
+                        $"{settings.PortRangeStart}-{settings.PortRangeEnd}.");
+                    return;
+                }
 
                 _listenerThread = new Thread(ListenLoop)
                 {
@@ -48,7 +68,10 @@ namespace Wuc
                 };
                 _listenerThread.Start();
 
-                Debug.Log($"[Wuc] Server listening on http://127.0.0.1:{Port}/");
+                WriteRegistrationFile();
+                Debug.Log(
+                    $"[Wuc] Server listening on http://127.0.0.1:{_boundPort}/ " +
+                    $"(projectId={_projectId}, instanceId={_instanceId})");
             }
             catch (Exception ex)
             {
@@ -59,8 +82,12 @@ namespace Wuc
         private static void Shutdown()
         {
             EditorApplication.update -= DrainMainThreadQueue;
+            AssemblyReloadEvents.beforeAssemblyReload -= Shutdown;
+            EditorApplication.quitting -= Shutdown;
             _listener?.Close();
             _listener = null;
+            _boundPort = 0;
+            RemoveRegistrationFile();
         }
 
         // ── 主线程调度 ──────────────────────────────────────────────────────
@@ -127,6 +154,9 @@ namespace Wuc
                 object result;
                 switch (path)
                 {
+                    case "/identity":
+                        result = HandleIdentity();
+                        break;
                     case "/execute":
                         result = HandleExecute(body);
                         break;
@@ -161,6 +191,19 @@ namespace Wuc
         }
 
         // ── Route handlers ─────────────────────────────────────────────────
+
+        private static object HandleIdentity()
+        {
+            return new
+            {
+                projectId = _projectId,
+                projectPath = _projectPath,
+                instanceId = _instanceId,
+                pid = _processId,
+                port = _boundPort,
+                startedAtUtc = _startedAtUtc.ToString("O"),
+            };
+        }
 
         private static object HandleExecute(string body)
         {
@@ -224,6 +267,98 @@ namespace Wuc
             return new { ok = true };
         }
 
+        // ── Listener + registry ────────────────────────────────────────────
+
+        private static bool TryBindListener(int startPort, int endPort)
+        {
+            for (var port = startPort; port <= endPort; port++)
+            {
+                if (TryStartListener(port))
+                {
+                    _boundPort = port;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryStartListener(int port)
+        {
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+            try
+            {
+                listener.Start();
+                _listener = listener;
+                return true;
+            }
+            catch
+            {
+                try { listener.Close(); } catch { }
+                return false;
+            }
+        }
+
+        private static void WriteRegistrationFile()
+        {
+            try
+            {
+                var registryDir = GetRegistryDirectory();
+                Directory.CreateDirectory(registryDir);
+
+                _registrationFilePath = Path.Combine(registryDir, $"{_instanceId}.json");
+                var tempFilePath = _registrationFilePath + ".tmp";
+
+                var payload = new RegistrationRecord
+                {
+                    projectId = _projectId,
+                    projectPath = _projectPath,
+                    instanceId = _instanceId,
+                    pid = _processId,
+                    port = _boundPort,
+                    startedAtUtc = _startedAtUtc.ToString("O"),
+                    updatedAtUtc = DateTime.UtcNow.ToString("O"),
+                };
+
+                var json = JsonSerializer.Serialize(payload);
+                File.WriteAllText(tempFilePath, json, Encoding.UTF8);
+
+                if (File.Exists(_registrationFilePath))
+                {
+                    try { File.Delete(_registrationFilePath); } catch { }
+                }
+                File.Move(tempFilePath, _registrationFilePath);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Wuc] Failed to write registry file: {ex.Message}");
+            }
+        }
+
+        private static void RemoveRegistrationFile()
+        {
+            if (string.IsNullOrEmpty(_registrationFilePath))
+                return;
+
+            try
+            {
+                if (File.Exists(_registrationFilePath))
+                    File.Delete(_registrationFilePath);
+            }
+            catch { }
+            finally
+            {
+                _registrationFilePath = null;
+            }
+        }
+
+        private static string GetRegistryDirectory()
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return Path.Combine(home, ".wuc", "instances");
+        }
+
         // ── JSON helper ────────────────────────────────────────────────────
 
         private static void WriteJson(HttpListenerResponse resp, object obj)
@@ -242,6 +377,17 @@ namespace Wuc
             public string code       { get; set; }
             public string scriptPath { get; set; }
             public int    timeoutMs  { get; set; } = 30_000;
+        }
+
+        private class RegistrationRecord
+        {
+            public string projectId { get; set; }
+            public string projectPath { get; set; }
+            public string instanceId { get; set; }
+            public int pid { get; set; }
+            public int port { get; set; }
+            public string startedAtUtc { get; set; }
+            public string updatedAtUtc { get; set; }
         }
     }
 }

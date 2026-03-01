@@ -15,7 +15,8 @@ Claude Code / AI Agent
        ▼
   wuc.py  (HTTP client, project root)
        │
-       │  HTTP  127.0.0.1:23557
+       │  discovers ~/.wuc/instances, verifies /identity
+       │  HTTP  127.0.0.1:<dynamic-port>
        ▼
   WucServer.cs  [InitializeOnLoad] — Assets/Editor/Wuc/
        │
@@ -32,10 +33,17 @@ Claude Code / AI Agent
 | File | Role |
 |------|------|
 | `Assets/Editor/Wuc/WucServer.cs` | HTTP server, route dispatch, main-thread queue |
+| `Assets/Editor/Wuc/WucSettings.cs` | Project settings (port range and projectId override) |
 | `Assets/Editor/Wuc/CSharpScriptRunner.cs` | Roslyn C# executor, persistent log buffer |
 | `Assets/Editor/Wuc/Plugins/` | Roslyn DLLs + System.Text.Json bundled |
 
-## HTTP API (port 23557)
+## HTTP API (dynamic port)
+
+Unity registers each running editor at `~/.wuc/instances/<instanceId>.json`.
+The client resolves by `projectId` and confirms with `GET /identity`.
+
+### GET /identity
+Returns `{ projectId, projectPath, instanceId, pid, port, startedAtUtc }`.
 
 ### POST /execute
 ```json

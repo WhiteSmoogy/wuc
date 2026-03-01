@@ -19,15 +19,15 @@ namespace Wuc
     public struct LogEntry
     {
         public DateTime Timestamp;
-        public LogType  Type;
-        public string   Message;
-        public string   StackTrace;
+        public LogType Type;
+        public string Message;
+        public string StackTrace;
 
         public override string ToString()
         {
-            var prefix = Type == LogType.Error   ? "[Error] "
+            var prefix = Type == LogType.Error ? "[Error] "
                        : Type == LogType.Warning ? "[Warning] "
-                       : Type == LogType.Assert  ? "[Assert] "
+                       : Type == LogType.Assert ? "[Assert] "
                        : "";
             return $"[{Timestamp:HH:mm:ss.fff}] {prefix}{Message}";
         }
@@ -38,17 +38,17 @@ namespace Wuc
         internal StringBuilder Output;
 
         public void print(object value) => Output?.AppendLine(value?.ToString() ?? "null");
-        public void log(object value)   => Debug.Log(value);
+        public void log(object value) => Debug.Log(value);
     }
 
     public class ExecutionResult
     {
-        public bool         Success         { get; set; }
-        public object       ReturnValue     { get; set; }
-        public string       Error           { get; set; }
-        public string       Output          { get; set; }
-        public List<string> Logs            { get; set; }
-        public double       ExecutionTimeMs { get; set; }
+        public bool Success { get; set; }
+        public object ReturnValue { get; set; }
+        public string Error { get; set; }
+        public string Output { get; set; }
+        public List<string> Logs { get; set; }
+        public double ExecutionTimeMs { get; set; }
     }
 
     [InitializeOnLoad]
@@ -58,8 +58,8 @@ namespace Wuc
         private const int MaxLogBufferSize = 500;
 
         private static readonly Queue<LogEntry> _logBuffer = new Queue<LogEntry>();
-        private static readonly object          _logLock   = new object();
-        private static readonly object          _roslynLock = new object();
+        private static readonly object _logLock = new object();
+        private static readonly object _roslynLock = new object();
 
         static CSharpScriptRunner()
         {
@@ -73,7 +73,7 @@ namespace Wuc
         {
             lock (_logLock)
             {
-                var arr  = _logBuffer.ToArray();
+                var arr = _logBuffer.ToArray();
                 int skip = Math.Max(0, arr.Length - count);
                 return arr.Skip(skip).ToList();
             }
@@ -94,21 +94,21 @@ namespace Wuc
 
                 _logBuffer.Enqueue(new LogEntry
                 {
-                    Timestamp  = DateTime.Now,
-                    Type       = type,
-                    Message    = condition,
+                    Timestamp = DateTime.Now,
+                    Type = type,
+                    Message = condition,
                     StackTrace = stackTrace,
                 });
             }
         }
 
         // ── Roslyn state ───────────────────────────────────────────────────
-        private static bool   _roslynInitialized;
+        private static bool _roslynInitialized;
         private static string _roslynInitError;
         private static object _scriptOptions;
 
-        private static Type       _scriptOptionsType;
-        private static Type       _csharpScriptType;
+        private static Type _scriptOptionsType;
+        private static Type _csharpScriptType;
         private static MethodInfo _cachedEvaluateSourceTextMethod;
         private static MethodInfo _cachedEvaluateStringMethod;
         private static MetadataReference[] _cachedMetadataReferences;
@@ -128,32 +128,19 @@ namespace Wuc
 
         private static void DisposeRoslynState()
         {
-            lock (_roslynLock)
-            {
-                _scriptOptions = null;
-                _scriptOptionsType = null;
-                _csharpScriptType = null;
-                _cachedEvaluateSourceTextMethod = null;
-                _cachedEvaluateStringMethod = null;
-                _cachedMetadataReferences = null;
-                _roslynInitialized = false;
-                _roslynInitError = null;
-            }
-
-            try
-            {
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
-            }
-            finally
-            { 
-            }
+            _scriptOptions = null;
+            _scriptOptionsType = null;
+            _csharpScriptType = null;
+            _cachedEvaluateSourceTextMethod = null;
+            _cachedEvaluateStringMethod = null;
+            _cachedMetadataReferences = null;
+            _roslynInitialized = false;
+            _roslynInitError = null;
         }
 
         // ── Output / log capture ───────────────────────────────────────────
         private static readonly StringBuilder OutputBuffer = new StringBuilder();
-        private static readonly List<string>  CapturedLogs = new List<string>();
+        private static readonly List<string> CapturedLogs = new List<string>();
 
         // ================================================================== //
         //  Public API
@@ -162,7 +149,7 @@ namespace Wuc
         public static ExecutionResult Execute(
             string scriptCode,
             string scriptPath = null,
-            int    timeoutMs  = 30_000)
+            int timeoutMs = 30_000)
         {
             OutputBuffer.Clear();
             CapturedLogs.Clear();
@@ -174,7 +161,7 @@ namespace Wuc
                 // Strip BOM and zero-width characters that confuse Roslyn
                 scriptCode = scriptCode.TrimStart('\uFEFF', '\u200B', '\u0000');
 
-                object    returnValue        = null;
+                object returnValue = null;
                 Exception executionException = null;
 
                 Application.logMessageReceived += CaptureLog;
@@ -195,20 +182,20 @@ namespace Wuc
                 {
                     return new ExecutionResult
                     {
-                        Success         = false,
-                        Error           = $"Execution error: {executionException.Message}\n{executionException.StackTrace}",
-                        Output          = OutputBuffer.ToString(),
-                        Logs            = new List<string>(CapturedLogs),
+                        Success = false,
+                        Error = $"Execution error: {executionException.Message}\n{executionException.StackTrace}",
+                        Output = OutputBuffer.ToString(),
+                        Logs = new List<string>(CapturedLogs),
                         ExecutionTimeMs = (DateTime.Now - startTime).TotalMilliseconds,
                     };
                 }
 
                 return new ExecutionResult
                 {
-                    Success         = true,
-                    ReturnValue     = returnValue,
-                    Output          = OutputBuffer.ToString(),
-                    Logs            = new List<string>(CapturedLogs),
+                    Success = true,
+                    ReturnValue = returnValue,
+                    Output = OutputBuffer.ToString(),
+                    Logs = new List<string>(CapturedLogs),
                     ExecutionTimeMs = (DateTime.Now - startTime).TotalMilliseconds,
                 };
             }
@@ -216,10 +203,10 @@ namespace Wuc
             {
                 return new ExecutionResult
                 {
-                    Success         = false,
-                    Error           = $"Unexpected error: {ex.Message}\n{ex.StackTrace}",
-                    Output          = OutputBuffer.ToString(),
-                    Logs            = new List<string>(CapturedLogs),
+                    Success = false,
+                    Error = $"Unexpected error: {ex.Message}\n{ex.StackTrace}",
+                    Output = OutputBuffer.ToString(),
+                    Logs = new List<string>(CapturedLogs),
                     ExecutionTimeMs = (DateTime.Now - startTime).TotalMilliseconds,
                 };
             }
@@ -285,7 +272,7 @@ namespace Wuc
                     try { opts = addImports.Invoke(opts, new object[] { imports }); } catch { }
                 }
 
-                _scriptOptions     = opts;
+                _scriptOptions = opts;
                 _roslynInitialized = true;
             }
             catch (Exception ex)
@@ -310,7 +297,7 @@ namespace Wuc
 
             // Stable virtual file path for diagnostics and stack traces
             var normalizedPath = NormalizeScriptPath(scriptPath);
-            var options        = InvokeMethod(_scriptOptions, "WithFilePath", normalizedPath);
+            var options = InvokeMethod(_scriptOptions, "WithFilePath", normalizedPath);
 
             var task = EvaluateAsyncBestEffort(code, options, globals, typeof(ScriptGlobals));
 
@@ -323,10 +310,10 @@ namespace Wuc
         }
 
         private static Task<object> EvaluateAsyncBestEffort(
-            string        code,
-            object        baseOptions,
+            string code,
+            object baseOptions,
             ScriptGlobals globals,
-            Type          globalsType)
+            Type globalsType)
         {
             // Prefer SourceText overload (enables debug info); fall back to string overload (avoids CS8055)
             if (TryGetEvaluateAsyncSourceTextOverload(out var mi))
@@ -334,11 +321,11 @@ namespace Wuc
                 try
                 {
                     var debugOptions = InvokeMethod(baseOptions, "WithEmitDebugInformation", true);
-                    debugOptions     = InvokeMethod(debugOptions, "WithOptimizationLevel",
+                    debugOptions = InvokeMethod(debugOptions, "WithOptimizationLevel",
                                            OptimizationLevel.Debug);
 
                     var sourceText = SourceText.From(code, Encoding.UTF8);
-                    var ct         = CancellationToken.None;
+                    var ct = CancellationToken.None;
 
                     var result = mi.Invoke(
                         null,
@@ -353,10 +340,10 @@ namespace Wuc
         }
 
         private static Task<object> EvaluateAsyncWithString(
-            string        code,
-            object        options,
+            string code,
+            object options,
             ScriptGlobals globals,
-            Type          globalsType)
+            Type globalsType)
         {
             if (_cachedEvaluateStringMethod == null)
             {
@@ -368,12 +355,12 @@ namespace Wuc
                     .Where(m => m.Name == "EvaluateAsync" && m.IsGenericMethodDefinition))
                 {
                     var ps = m.GetParameters();
-                    if (ps.Length != 5)                                                          continue;
-                    if (ps[0].ParameterType != typeof(string))                                   continue;
+                    if (ps.Length != 5) continue;
+                    if (ps[0].ParameterType != typeof(string)) continue;
                     if (_scriptOptionsType != null && ps[1].ParameterType != _scriptOptionsType) continue;
-                    if (ps[2].ParameterType != typeof(object))                                   continue;
-                    if (ps[3].ParameterType != typeof(Type))                                     continue;
-                    if (ps[4].ParameterType != typeof(CancellationToken))                        continue;
+                    if (ps[2].ParameterType != typeof(object)) continue;
+                    if (ps[3].ParameterType != typeof(Type)) continue;
+                    if (ps[4].ParameterType != typeof(CancellationToken)) continue;
 
                     _cachedEvaluateStringMethod = m.MakeGenericMethod(typeof(object));
                     break;
@@ -429,12 +416,12 @@ namespace Wuc
                 foreach (var m in methods)
                 {
                     var ps = m.GetParameters();
-                    if (ps.Length != 5)                                                          continue;
-                    if (ps[0].ParameterType != typeof(SourceText))                               continue;
+                    if (ps.Length != 5) continue;
+                    if (ps[0].ParameterType != typeof(SourceText)) continue;
                     if (_scriptOptionsType != null && ps[1].ParameterType != _scriptOptionsType) continue;
-                    if (ps[2].ParameterType != typeof(object))                                   continue;
-                    if (ps[3].ParameterType != typeof(Type))                                     continue;
-                    if (ps[4].ParameterType != typeof(CancellationToken))                        continue;
+                    if (ps[2].ParameterType != typeof(object)) continue;
+                    if (ps[3].ParameterType != typeof(Type)) continue;
+                    if (ps[4].ParameterType != typeof(CancellationToken)) continue;
 
                     method = m.MakeGenericMethod(typeof(object));
                     _cachedEvaluateSourceTextMethod = method;
@@ -541,9 +528,9 @@ namespace Wuc
 
         private static void CaptureLog(string condition, string stackTrace, LogType type)
         {
-            var prefix = type == LogType.Error   ? "[Error] "
+            var prefix = type == LogType.Error ? "[Error] "
                        : type == LogType.Warning ? "[Warning] "
-                       : type == LogType.Assert  ? "[Assert] "
+                       : type == LogType.Assert ? "[Assert] "
                        : "";
             CapturedLogs.Add($"{prefix}{condition}");
         }
