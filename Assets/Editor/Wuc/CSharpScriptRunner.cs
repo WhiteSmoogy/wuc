@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEngine;
 
 namespace Wuc
@@ -55,12 +56,13 @@ namespace Wuc
 
         private static readonly Queue<LogEntry> _logBuffer = new Queue<LogEntry>();
         private static readonly object          _logLock   = new object();
+        private static readonly object          _roslynLock = new object();
 
         static CSharpScriptRunner()
         {
             Application.logMessageReceived += OnPersistentLogReceived;
-            AssemblyReloadEvents.beforeAssemblyReload +=
-                () => Application.logMessageReceived -= OnPersistentLogReceived;
+            AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+            CompilationPipeline.compilationStarted += OnCompilationStarted;
         }
 
         /// <summary>Returns the most recent <paramref name="count"/> Unity log entries.</summary>
@@ -106,6 +108,48 @@ namespace Wuc
         private static Type       _csharpScriptType;
         private static MethodInfo _cachedEvaluateSourceTextMethod;
         private static MethodInfo _cachedEvaluateStringMethod;
+
+        private static void OnBeforeAssemblyReload()
+        {
+            Application.logMessageReceived -= OnPersistentLogReceived;
+            AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeAssemblyReload;
+            CompilationPipeline.compilationStarted -= OnCompilationStarted;
+            DisposeRoslynState();
+        }
+
+        private static void OnCompilationStarted(object context)
+        {
+            DisposeRoslynState();
+        }
+
+        private static void DisposeRoslynState()
+        {
+            lock (_roslynLock)
+            {
+                try
+                {
+                    if (_scriptOptions is IDisposable disposable)
+                    {
+                        disposable.Dispose();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[Wuc] Roslyn dispose failed: {ex.Message}");
+                }
+                finally
+                {
+                    _scriptOptions = null;
+                }
+
+                _scriptOptionsType = null;
+                _csharpScriptType = null;
+                _cachedEvaluateSourceTextMethod = null;
+                _cachedEvaluateStringMethod = null;
+                _roslynInitialized = false;
+                _roslynInitError = null;
+            }
+        }
 
         // ── Output / log capture ───────────────────────────────────────────
         private static readonly StringBuilder OutputBuffer = new StringBuilder();
@@ -216,7 +260,7 @@ namespace Wuc
 
                 // Add all loaded assemblies as references
                 var addRefs = _scriptOptionsType.GetMethod(
-                    "AddReferences", new[] { typeof(Assembly[]) });
+                    "AddReferences", new[] { typeof(System.Reflection.Assembly[]) });
                 if (addRefs != null)
                 {
                     var assemblies = AppDomain.CurrentDomain.GetAssemblies()
