@@ -149,6 +149,15 @@ namespace Wuc
                 _roslynInitialized = false;
                 _roslynInitError = null;
             }
+
+            try
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+            }
+            finally
+            { }
         }
 
         // ── Output / log capture ───────────────────────────────────────────
