@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -108,6 +111,7 @@ namespace Wuc
         private static Type       _csharpScriptType;
         private static MethodInfo _cachedEvaluateSourceTextMethod;
         private static MethodInfo _cachedEvaluateStringMethod;
+        private static MetadataReference[] _cachedMetadataReferences;
 
         private static void OnBeforeAssemblyReload()
         {
@@ -146,6 +150,7 @@ namespace Wuc
                 _csharpScriptType = null;
                 _cachedEvaluateSourceTextMethod = null;
                 _cachedEvaluateStringMethod = null;
+                _cachedMetadataReferences = null;
                 _roslynInitialized = false;
                 _roslynInitError = null;
             }
@@ -267,15 +272,15 @@ namespace Wuc
                     .GetProperty("Default", BindingFlags.Public | BindingFlags.Static)
                     ?.GetValue(null);
 
-                // Add all loaded assemblies as references
-                var addRefs = _scriptOptionsType.GetMethod(
-                    "AddReferences", new[] { typeof(System.Reflection.Assembly[]) });
+                // Use in-memory metadata references to avoid file locks during Unity recompilation.
+                var addRefs = ResolveAddReferencesMethod();
                 if (addRefs != null)
                 {
-                    var assemblies = AppDomain.CurrentDomain.GetAssemblies()
-                        .Where(a => !a.IsDynamic)
-                        .ToArray();
-                    try { opts = addRefs.Invoke(opts, new object[] { assemblies }); } catch { }
+                    _cachedMetadataReferences ??= BuildInMemoryMetadataReferences();
+                    if (_cachedMetadataReferences.Length > 0)
+                    {
+                        try { opts = addRefs.Invoke(opts, new object[] { _cachedMetadataReferences }); } catch { }
+                    }
                 }
 
                 // Add default using namespaces
@@ -394,9 +399,18 @@ namespace Wuc
             }
 
             var noDebugOptions = InvokeMethod(options, "WithEmitDebugInformation", false);
-            var result = _cachedEvaluateStringMethod.Invoke(
-                null,
-                new object[] { code, noDebugOptions, globals, globalsType, CancellationToken.None });
+            object result;
+            try
+            {
+                result = _cachedEvaluateStringMethod.Invoke(
+                    null,
+                    new object[] { code, noDebugOptions, globals, globalsType, CancellationToken.None });
+            }
+            catch (TargetInvocationException tie) when (tie.InnerException != null)
+            {
+                ExceptionDispatchInfo.Capture(tie.InnerException).Throw();
+                throw;
+            }
 
             return (Task<object>)result;
         }
@@ -452,6 +466,76 @@ namespace Wuc
         // ================================================================== //
         //  Helpers
         // ================================================================== //
+
+        private static MethodInfo ResolveAddReferencesMethod()
+        {
+            if (_scriptOptionsType == null) return null;
+
+            foreach (var m in _scriptOptionsType
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .Where(m => m.Name == "AddReferences"))
+            {
+                var ps = m.GetParameters();
+                if (ps.Length != 1) continue;
+
+                if (ps[0].ParameterType == typeof(MetadataReference[]))
+                    return m;
+            }
+
+            foreach (var m in _scriptOptionsType
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .Where(m => m.Name == "AddReferences"))
+            {
+                var ps = m.GetParameters();
+                if (ps.Length != 1) continue;
+
+                if (typeof(IEnumerable<MetadataReference>).IsAssignableFrom(ps[0].ParameterType))
+                    return m;
+            }
+
+            return null;
+        }
+
+        private static MetadataReference[] BuildInMemoryMetadataReferences()
+        {
+            var references = new List<MetadataReference>();
+            var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenAssemblyIdentities = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (asm == null || asm.IsDynamic) continue;
+
+                string identity;
+                try { identity = asm.GetName().FullName; }
+                catch { continue; }
+
+                if (string.IsNullOrEmpty(identity)) continue;
+                if (!seenAssemblyIdentities.Add(identity)) continue;
+
+                string path;
+                try { path = asm.Location; }
+                catch { continue; }
+
+                if (string.IsNullOrEmpty(path)) continue;
+                if (!File.Exists(path)) continue;
+                if (!seenPaths.Add(path)) continue;
+
+                try
+                {
+                    var bytes = File.ReadAllBytes(path);
+                    if (bytes.Length == 0) continue;
+
+                    references.Add(MetadataReference.CreateFromImage(ImmutableArray.Create(bytes)));
+                }
+                catch
+                {
+                    // Ignore a single assembly reference failure and keep building remaining refs.
+                }
+            }
+
+            return references.ToArray();
+        }
 
         // Invoke a ScriptOptions With* chain method via reflection
         private static object InvokeMethod(object target, string methodName, params object[] args)
