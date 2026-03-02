@@ -35,9 +35,7 @@ namespace Wuc
 
     public class ScriptGlobals
     {
-        internal StringBuilder Output;
-
-        public void print(object value) => Output?.AppendLine(value?.ToString() ?? "null");
+        public void print(object value) => Debug.Log(value?.ToString() ?? "null");
         public void log(object value) => Debug.Log(value);
     }
 
@@ -46,7 +44,6 @@ namespace Wuc
         public bool Success { get; set; }
         public object ReturnValue { get; set; }
         public string Error { get; set; }
-        public string Output { get; set; }
         public List<string> Logs { get; set; }
         public double ExecutionTimeMs { get; set; }
     }
@@ -115,6 +112,7 @@ namespace Wuc
 
         private static void OnBeforeAssemblyReload()
         {
+            Debug.Log("Assembly reload detected, clearing Roslyn state.");
             Application.logMessageReceived -= OnPersistentLogReceived;
             AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeAssemblyReload;
             CompilationPipeline.compilationStarted -= OnCompilationStarted;
@@ -123,6 +121,7 @@ namespace Wuc
 
         private static void OnCompilationStarted(object context)
         {
+            Debug.Log($"Compilation started, clearing Roslyn state. {context}");
             DisposeRoslynState();
         }
 
@@ -138,8 +137,7 @@ namespace Wuc
             _roslynInitError = null;
         }
 
-        // ── Output / log capture ───────────────────────────────────────────
-        private static readonly StringBuilder OutputBuffer = new StringBuilder();
+        // ── Log capture ─────────────────────────────────────────────────────
         private static readonly List<string> CapturedLogs = new List<string>();
 
         // ================================================================== //
@@ -151,9 +149,9 @@ namespace Wuc
             string scriptPath = null,
             int timeoutMs = 30_000)
         {
-            OutputBuffer.Clear();
             CapturedLogs.Clear();
             var startTime = DateTime.Now;
+            Debug.Log($"Executing script ...");
 
             try
             {
@@ -184,7 +182,6 @@ namespace Wuc
                     {
                         Success = false,
                         Error = $"Execution error: {executionException.Message}\n{executionException.StackTrace}",
-                        Output = OutputBuffer.ToString(),
                         Logs = new List<string>(CapturedLogs),
                         ExecutionTimeMs = (DateTime.Now - startTime).TotalMilliseconds,
                     };
@@ -194,7 +191,6 @@ namespace Wuc
                 {
                     Success = true,
                     ReturnValue = returnValue,
-                    Output = OutputBuffer.ToString(),
                     Logs = new List<string>(CapturedLogs),
                     ExecutionTimeMs = (DateTime.Now - startTime).TotalMilliseconds,
                 };
@@ -205,7 +201,6 @@ namespace Wuc
                 {
                     Success = false,
                     Error = $"Unexpected error: {ex.Message}\n{ex.StackTrace}",
-                    Output = OutputBuffer.ToString(),
                     Logs = new List<string>(CapturedLogs),
                     ExecutionTimeMs = (DateTime.Now - startTime).TotalMilliseconds,
                 };
@@ -293,7 +288,7 @@ namespace Wuc
             if (_roslynInitError != null)
                 throw new InvalidOperationException($"Roslyn not available: {_roslynInitError}");
 
-            var globals = new ScriptGlobals { Output = OutputBuffer };
+            var globals = new ScriptGlobals();
 
             // Stable virtual file path for diagnostics and stack traces
             var normalizedPath = NormalizeScriptPath(scriptPath);

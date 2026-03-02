@@ -216,12 +216,12 @@ namespace Wuc
                 req.scriptPath,
                 req.timeoutMs > 0 ? req.timeoutMs : 30_000));
 
+            // Keep execute responses concise: status, return value, logs, and timing.
             return new
             {
                 success         = r.Success,
                 returnValue     = BuildReturnValue(r.ReturnValue),
                 error           = r.Error,
-                output          = r.Output,
                 logs            = r.Logs,
                 executionTimeMs = r.ExecutionTimeMs,
             };
