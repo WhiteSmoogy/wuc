@@ -46,7 +46,6 @@ Response fields:
 |-------|------|-------------|
 | `success` | bool | Whether execution succeeded |
 | `returnValue` | object\|null | `{"type": "<FullTypeName>", "content": <JSON value>}`, or `null` if the script returns null. `content` is the JSON-serialized value; falls back to a string if the type is not JSON-serializable. |
-| `output` | string | Lines written via `print()` |
 | `logs` | string[] | Unity log messages captured during execution |
 | `executionTimeMs` | number | Wall-clock time in ms |
 | `error` | string | Error message + stack trace on failure |
@@ -86,13 +85,6 @@ Scripts run via Roslyn (`Microsoft.CodeAnalysis.CSharp.Scripting`) on the Unity 
 - `UnityEngine`, `UnityEditor`
 
 **All loaded assemblies** are referenced automatically.
-
-**Globals available in every script:**
-
-```csharp
-print(value)   // appends to response `output` field
-log(value)     // calls Debug.Log
-```
 
 **Return value:** the last expression in the script is returned as `returnValue`, a JSON object `{"type": "<FullTypeName>", "content": <value>}`. For example, a `string` result yields `{"type": "System.String", "content": "hello"}`, and a `Vector3` yields `{"type": "UnityEngine.Vector3", "content": {"x":1.0,"y":0.0,"z":0.0}}`.
 
