@@ -22,7 +22,7 @@ Claude Code / AI Agent
        │
        │  main-thread dispatch via EditorApplication.update
        ▼
-  CSharpScriptRunner.cs  (Roslyn scripting + log buffer)
+  CSharpScriptRunner.cs  (Roslyn scripting + Temp/wuc.log persistence)
        │
        ▼
   Unity Engine / Editor API
@@ -34,7 +34,7 @@ Claude Code / AI Agent
 |------|------|
 | `Assets/Editor/Wuc/WucServer.cs` | HTTP server, route dispatch, main-thread queue |
 | `Assets/Editor/Wuc/WucSettings.cs` | Project settings (port range and projectId override) |
-| `Assets/Editor/Wuc/CSharpScriptRunner.cs` | Roslyn C# executor, persistent log buffer |
+| `Assets/Editor/Wuc/CSharpScriptRunner.cs` | Roslyn C# executor, append-only `Temp/wuc.log` persistence |
 | `Assets/Editor/Wuc/Plugins/` | Roslyn DLLs + System.Text.Json bundled |
 
 ## HTTP API (dynamic port)
@@ -52,11 +52,11 @@ Returns `{ projectId, projectPath, instanceId, pid, port, startedAtUtc }`.
 Response: `{ success, returnValue, output, logs, executionTimeMs, error }`
 
 ### GET /logs?count=N
-Returns last N Unity log entries (default 100, buffer max 500).
+Returns last N Unity log entries (default 100) from `Temp/wuc.log`.
 Each entry: `{ timestamp, type, message, stackTrace }`
 
 ### POST /logs/clear
-Clears the persistent log buffer. Returns `{ ok: true }`.
+Removes the older half of `Temp/wuc.log`. Returns `{ ok: true }`.
 
 ## C# Scripting (Roslyn)
 

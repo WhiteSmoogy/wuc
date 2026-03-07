@@ -75,8 +75,8 @@ then calls the HTTP API:
 |----------|--------|-------------|
 | `/identity` | GET | Return `{ projectId, projectPath, instanceId, pid, port, startedAtUtc }` |
 | `/execute` | POST | Run C# code on the Unity main thread |
-| `/logs` | GET | Fetch recent log entries (`?count=N`, default 100) |
-| `/logs/clear` | POST | Clear the log buffer |
+| `/logs` | GET | Fetch recent log entries (`?count=N`, default 100) from `Temp/wuc.log` |
+| `/logs/clear` | POST | Remove the older half of `Temp/wuc.log` |
 
 ### `/execute` request
 
@@ -114,6 +114,6 @@ The last expression in the script is returned as `returnValue`.
 |------|------|
 | `Assets/Editor/Wuc/WucServer.cs` | HTTP server, route dispatch, main-thread queue |
 | `Assets/Editor/Wuc/WucSettings.cs` | Project settings (port range and project ID override) |
-| `Assets/Editor/Wuc/CSharpScriptRunner.cs` | Roslyn executor, persistent log buffer |
+| `Assets/Editor/Wuc/CSharpScriptRunner.cs` | Roslyn executor, append-only `Temp/wuc.log` persistence |
 | `Assets/Editor/Wuc/Plugins/` | Roslyn DLLs + System.Text.Json (bundled) |
 | `.claude/skills/wuc/` | Claude Code skill (copy to `~/.claude/skills/`) |

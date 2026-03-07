@@ -229,7 +229,7 @@ def main():
                    help="Max entries to return (default: 100)")
 
     # ── clear ────────────────────────────────────────────────────────────
-    sub.add_parser("clear", help="Clear the persistent log buffer")
+    sub.add_parser("clear", help="Remove the older half of Temp/wuc.log")
     sub.add_parser("identity", help="Get the selected Unity instance identity")
 
     args = ap.parse_args()

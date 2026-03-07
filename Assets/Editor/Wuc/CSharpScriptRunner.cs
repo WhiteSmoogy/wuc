@@ -6,6 +6,7 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
@@ -51,15 +52,15 @@ namespace Wuc
     [InitializeOnLoad]
     public static class CSharpScriptRunner
     {
-        // ── Persistent log buffer ──────────────────────────────────────────
-        private const int MaxLogBufferSize = 500;
-
-        private static readonly Queue<LogEntry> _logBuffer = new Queue<LogEntry>();
-        private static readonly object _logLock = new object();
+        // ── Persistent log file ────────────────────────────────────────────
+        private static readonly object _logFileLock = new object();
         private static readonly object _roslynLock = new object();
+        private static readonly UTF8Encoding Utf8WithoutBom = new UTF8Encoding(false);
+        private static readonly string LogFilePath = GetLogFilePath();
 
         static CSharpScriptRunner()
         {
+            EnsureLogFileDirectory();
             Application.logMessageReceived += OnPersistentLogReceived;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
@@ -68,35 +69,67 @@ namespace Wuc
         /// <summary>Returns the most recent <paramref name="count"/> Unity log entries.</summary>
         public static List<LogEntry> GetRecentLogs(int count = 100)
         {
-            lock (_logLock)
+            if (count <= 0)
+                return new List<LogEntry>();
+
+            lock (_logFileLock)
             {
-                var arr = _logBuffer.ToArray();
-                int skip = Math.Max(0, arr.Length - count);
-                return arr.Skip(skip).ToList();
+                if (!File.Exists(LogFilePath))
+                    return new List<LogEntry>();
+
+                var recentEntries = new Queue<LogEntry>(count);
+                foreach (var line in File.ReadLines(LogFilePath))
+                {
+                    if (!TryParsePersistedLogEntry(line, out var entry))
+                        continue;
+
+                    if (recentEntries.Count >= count)
+                        recentEntries.Dequeue();
+
+                    recentEntries.Enqueue(entry);
+                }
+
+                return recentEntries.ToList();
             }
         }
 
-        /// <summary>Clears the persistent log buffer.</summary>
+        /// <summary>Removes the older half of the persistent log file.</summary>
         public static void ClearLogBuffer()
         {
-            lock (_logLock) { _logBuffer.Clear(); }
+            lock (_logFileLock)
+            {
+                EnsureLogFileDirectory();
+
+                if (!File.Exists(LogFilePath))
+                {
+                    File.WriteAllText(LogFilePath, string.Empty, Utf8WithoutBom);
+                    return;
+                }
+
+                var lines = File.ReadAllLines(LogFilePath)
+                    .Where(line => !string.IsNullOrWhiteSpace(line))
+                    .ToArray();
+
+                if (lines.Length == 0)
+                {
+                    File.WriteAllText(LogFilePath, string.Empty, Utf8WithoutBom);
+                    return;
+                }
+
+                var keepFrom = lines.Length / 2;
+                File.WriteAllLines(LogFilePath, lines.Skip(keepFrom), Utf8WithoutBom);
+            }
         }
 
         private static void OnPersistentLogReceived(string condition, string stackTrace, LogType type)
         {
-            lock (_logLock)
+            AppendLogEntry(new LogEntry
             {
-                if (_logBuffer.Count >= MaxLogBufferSize)
-                    _logBuffer.Dequeue();
-
-                _logBuffer.Enqueue(new LogEntry
-                {
-                    Timestamp = DateTime.Now,
-                    Type = type,
-                    Message = condition,
-                    StackTrace = stackTrace,
-                });
-            }
+                Timestamp = DateTime.Now,
+                Type = type,
+                Message = condition,
+                StackTrace = stackTrace,
+            });
         }
 
         // ── Roslyn state ───────────────────────────────────────────────────
@@ -528,6 +561,86 @@ namespace Wuc
                        : type == LogType.Assert ? "[Assert] "
                        : "";
             CapturedLogs.Add($"{prefix}{condition}");
+        }
+
+        private static void AppendLogEntry(LogEntry entry)
+        {
+            try
+            {
+                var persisted = new PersistedLogEntry
+                {
+                    timestamp = entry.Timestamp.ToString("O"),
+                    type = entry.Type.ToString(),
+                    message = entry.Message,
+                    stackTrace = entry.StackTrace,
+                };
+                var line = JsonSerializer.Serialize(persisted);
+
+                lock (_logFileLock)
+                {
+                    EnsureLogFileDirectory();
+                    File.AppendAllText(LogFilePath, line + Environment.NewLine, Utf8WithoutBom);
+                }
+            }
+            catch
+            {
+                // Avoid recursive logging if file persistence fails.
+            }
+        }
+
+        private static bool TryParsePersistedLogEntry(string line, out LogEntry entry)
+        {
+            entry = default;
+            if (string.IsNullOrWhiteSpace(line))
+                return false;
+
+            try
+            {
+                var persisted = JsonSerializer.Deserialize<PersistedLogEntry>(line);
+                if (persisted == null)
+                    return false;
+
+                if (!DateTime.TryParse(persisted.timestamp, null,
+                        System.Globalization.DateTimeStyles.RoundtripKind, out var timestamp))
+                    return false;
+
+                if (!Enum.TryParse(persisted.type, out LogType type))
+                    type = LogType.Log;
+
+                entry = new LogEntry
+                {
+                    Timestamp = timestamp,
+                    Type = type,
+                    Message = persisted.message ?? string.Empty,
+                    StackTrace = persisted.stackTrace ?? string.Empty,
+                };
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void EnsureLogFileDirectory()
+        {
+            var directory = Path.GetDirectoryName(LogFilePath);
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+        }
+
+        private static string GetLogFilePath()
+        {
+            var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            return Path.Combine(projectRoot, "Temp", "wuc.log");
+        }
+
+        private class PersistedLogEntry
+        {
+            public string timestamp { get; set; }
+            public string type { get; set; }
+            public string message { get; set; }
+            public string stackTrace { get; set; }
         }
     }
 }

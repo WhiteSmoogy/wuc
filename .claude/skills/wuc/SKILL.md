@@ -21,7 +21,7 @@ python {skillDir}/wuc/wuc.py execute "return Application.unityVersion;"
 # list all GameObjects in the active scene
 python {skillDir}/wuc/wuc.py execute "return Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None).Select(o => o.name).ToList();"
 
-# clear the log buffer
+# trim the oldest half of Temp/wuc.log
 python {skillDir}/wuc/wuc.py clear
 ```
 
@@ -59,13 +59,15 @@ python wuc.py logs --count 50
 
 Each entry: `timestamp` (HH:mm:ss.fff), `type` (Log/Warning/Error/Assert/Exception), `message`, `stackTrace`.
 
-The log buffer holds up to 500 entries and captures all Unity log output for the lifetime of the Editor session.
+Logs are appended to `Temp/wuc.log` as JSON lines and `/logs` reads the most recent entries from that file.
 
-### Clear log buffer
+### Clear log file history
 
 ```bash
 python wuc.py clear
 ```
+
+`clear` removes the older half of `Temp/wuc.log` and keeps the newer half.
 
 ### Get selected instance identity
 
