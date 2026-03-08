@@ -228,8 +228,13 @@ def main():
     p.add_argument("--count", type=int, default=100,
                    help="Max entries to return (default: 100)")
 
-    # ── clear ────────────────────────────────────────────────────────────
-    sub.add_parser("clear", help="Remove the older half of Temp/wuc.log")
+    # ── clear / clear-before ────────────────────────────────────────────
+    sub.add_parser("clear", help="Clear all log entries from Temp/wuc.log")
+    p = sub.add_parser("clear-before", help="Remove log entries older than a timestamp")
+    p.add_argument(
+        "before",
+        help="Delete logs earlier than this timestamp (ISO 8601 recommended, e.g. 2026-03-08T12:34:56.789Z)",
+    )
     sub.add_parser("identity", help="Get the selected Unity instance identity")
 
     args = ap.parse_args()
@@ -251,6 +256,15 @@ def main():
 
         elif args.action == "clear":
             result = call(base, "POST", "/logs/clear", timeout=10)
+
+        elif args.action == "clear-before":
+            result = call(
+                base,
+                "POST",
+                "/logs/clear-before",
+                {"before": args.before},
+                timeout=10,
+            )
 
         elif args.action == "identity":
             result = call(base, "GET", "/identity", timeout=5)

@@ -53,10 +53,17 @@ Response: `{ success, returnValue, output, logs, executionTimeMs, error }`
 
 ### GET /logs?count=N
 Returns last N Unity log entries (default 100) from `Temp/wuc.log`.
-Each entry: `{ timestamp, type, message, stackTrace }`
+Each entry: `{ timestamp, timestampUtc, type, message, stackTrace }`
 
 ### POST /logs/clear
-Removes the older half of `Temp/wuc.log`. Returns `{ ok: true }`.
+Clears all entries from `Temp/wuc.log`. Returns `{ ok: true, removedCount }`.
+Use this before asking an agent to decide whether a fresh compile emitted errors.
+
+### POST /logs/clear-before
+```json
+{ "before": "2026-03-08T12:34:56.789Z" }
+```
+Removes entries earlier than `before`. Prefer passing the `timestampUtc` value returned by `/logs`.
 
 ## C# Scripting (Roslyn)
 

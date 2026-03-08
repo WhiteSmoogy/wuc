@@ -76,7 +76,16 @@ then calls the HTTP API:
 | `/identity` | GET | Return `{ projectId, projectPath, instanceId, pid, port, startedAtUtc }` |
 | `/execute` | POST | Run C# code on the Unity main thread |
 | `/logs` | GET | Fetch recent log entries (`?count=N`, default 100) from `Temp/wuc.log` |
-| `/logs/clear` | POST | Remove the older half of `Temp/wuc.log` |
+| `/logs/clear` | POST | Clear all entries from `Temp/wuc.log` |
+| `/logs/clear-before` | POST | Remove entries earlier than a given timestamp |
+
+Use `/logs/clear` when an agent needs a truly clean slate before deciding whether a fresh compile produced errors. Use `/logs/clear-before` for incremental consumption after recording a `timestampUtc` from `/logs`.
+
+### `/logs/clear-before` request
+
+```json
+{ "before": "2026-03-08T12:34:56.789Z" }
+```
 
 ### `/execute` request
 

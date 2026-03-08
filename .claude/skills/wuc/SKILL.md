@@ -21,8 +21,11 @@ python {skillDir}/wuc/wuc.py execute "return Application.unityVersion;"
 # list all GameObjects in the active scene
 python {skillDir}/wuc/wuc.py execute "return Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None).Select(o => o.name).ToList();"
 
-# trim the oldest half of Temp/wuc.log
+# clear all history in Temp/wuc.log
 python {skillDir}/wuc/wuc.py clear
+
+# clear only logs earlier than a timestamp
+python {skillDir}/wuc/wuc.py clear-before "2026-03-08T12:34:56.789Z"
 ```
 
 ## Commands
@@ -57,17 +60,25 @@ python wuc.py logs                # last 100 entries
 python wuc.py logs --count 50
 ```
 
-Each entry: `timestamp` (HH:mm:ss.fff), `type` (Log/Warning/Error/Assert/Exception), `message`, `stackTrace`.
+Each entry: `timestamp` (HH:mm:ss.fff), `timestampUtc` (ISO 8601 UTC), `type` (Log/Warning/Error/Assert/Exception), `message`, `stackTrace`.
 
 Logs are appended to `Temp/wuc.log` as JSON lines and `/logs` reads the most recent entries from that file.
 
-### Clear log file history
+### Clear all log history
 
 ```bash
 python wuc.py clear
 ```
 
-`clear` removes the older half of `Temp/wuc.log` and keeps the newer half.
+`clear` empties `Temp/wuc.log`. Use this before asking an agent to judge whether a fresh compile produced errors.
+
+### Clear logs before a timestamp
+
+```bash
+python wuc.py clear-before "2026-03-08T12:34:56.789Z"
+```
+
+`clear-before` removes only entries earlier than the provided timestamp and keeps newer logs intact. The safest input is the `timestampUtc` value returned by `python wuc.py logs`.
 
 ### Get selected instance identity
 

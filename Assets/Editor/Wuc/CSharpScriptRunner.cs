@@ -93,8 +93,24 @@ namespace Wuc
             }
         }
 
-        /// <summary>Removes the older half of the persistent log file.</summary>
-        public static void ClearLogBuffer()
+        /// <summary>Clears the persistent log file.</summary>
+        public static int ClearLogBuffer()
+        {
+            lock (_logFileLock)
+            {
+                EnsureLogFileDirectory();
+
+                var removedCount = File.Exists(LogFilePath)
+                    ? File.ReadLines(LogFilePath).Count(line => !string.IsNullOrWhiteSpace(line))
+                    : 0;
+
+                File.WriteAllText(LogFilePath, string.Empty, Utf8WithoutBom);
+                return removedCount;
+            }
+        }
+
+        /// <summary>Removes log entries strictly earlier than <paramref name="cutoff"/>.</summary>
+        public static int ClearLogsBefore(DateTime cutoff)
         {
             lock (_logFileLock)
             {
@@ -103,21 +119,28 @@ namespace Wuc
                 if (!File.Exists(LogFilePath))
                 {
                     File.WriteAllText(LogFilePath, string.Empty, Utf8WithoutBom);
-                    return;
+                    return 0;
                 }
 
-                var lines = File.ReadAllLines(LogFilePath)
-                    .Where(line => !string.IsNullOrWhiteSpace(line))
-                    .ToArray();
+                var remainingLines = new List<string>();
+                var removedCount = 0;
 
-                if (lines.Length == 0)
+                foreach (var line in File.ReadAllLines(LogFilePath))
                 {
-                    File.WriteAllText(LogFilePath, string.Empty, Utf8WithoutBom);
-                    return;
+                    if (string.IsNullOrWhiteSpace(line))
+                        continue;
+
+                    if (TryParsePersistedLogEntry(line, out var entry) && entry.Timestamp < cutoff)
+                    {
+                        removedCount++;
+                        continue;
+                    }
+
+                    remainingLines.Add(line);
                 }
 
-                var keepFrom = lines.Length / 2;
-                File.WriteAllLines(LogFilePath, lines.Skip(keepFrom), Utf8WithoutBom);
+                File.WriteAllLines(LogFilePath, remainingLines, Utf8WithoutBom);
+                return removedCount;
             }
         }
 

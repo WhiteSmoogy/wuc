@@ -166,6 +166,9 @@ namespace Wuc
                     case "/logs/clear":
                         result = HandleClearLogs();
                         break;
+                    case "/logs/clear-before":
+                        result = HandleClearLogsBefore(body);
+                        break;
                     default:
                         resp.StatusCode = 404;
                         WriteJson(resp, new { error = "Not found" });
@@ -254,17 +257,46 @@ namespace Wuc
 
             return entries.Select(e => new
             {
-                timestamp  = e.Timestamp.ToString("HH:mm:ss.fff"),
-                type       = e.Type.ToString(),
-                message    = e.Message,
+                timestamp = e.Timestamp.ToString("HH:mm:ss.fff"),
+                timestampUtc = e.Timestamp.ToUniversalTime().ToString("O"),
+                type = e.Type.ToString(),
+                message = e.Message,
                 stackTrace = e.StackTrace,
             }).ToList();
         }
 
         private static object HandleClearLogs()
         {
-            CSharpScriptRunner.ClearLogBuffer();
-            return new { ok = true };
+            var removedCount = CSharpScriptRunner.ClearLogBuffer();
+            return new { ok = true, removedCount };
+        }
+
+        private static object HandleClearLogsBefore(string body)
+        {
+            var req = JsonSerializer.Deserialize<ClearLogsBeforeRequest>(
+                body,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            if (req == null || string.IsNullOrWhiteSpace(req.before))
+                throw new ArgumentException("Missing 'before' timestamp.");
+
+            if (!DateTime.TryParse(
+                    req.before,
+                    null,
+                    System.Globalization.DateTimeStyles.RoundtripKind,
+                    out var cutoff))
+            {
+                throw new ArgumentException(
+                    "Invalid 'before' timestamp. Use ISO 8601, e.g. 2026-03-08T12:34:56.789Z.");
+            }
+
+            var removedCount = CSharpScriptRunner.ClearLogsBefore(cutoff);
+            return new
+            {
+                ok = true,
+                before = cutoff.ToUniversalTime().ToString("O"),
+                removedCount,
+            };
         }
 
         // ── Listener + registry ────────────────────────────────────────────
@@ -377,6 +409,11 @@ namespace Wuc
             public string code       { get; set; }
             public string scriptPath { get; set; }
             public int    timeoutMs  { get; set; } = 30_000;
+        }
+
+        private class ClearLogsBeforeRequest
+        {
+            public string before { get; set; }
         }
 
         private class RegistrationRecord
