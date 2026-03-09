@@ -9,15 +9,18 @@ Claude Code
     │  (wuc skill + ~/.wuc/instances discovery)
     │  HTTP  127.0.0.1:<dynamic-port>
     ▼
-WucServer.cs  [InitializeOnLoad]
-    │  main-thread dispatch
+wuc_daemon_runtime  (Rust native control plane)
+    │  queued execute requests + health + logs + idempotency
     ▼
-CSharpScriptRunner.cs  (Roslyn)
+WucServer.cs / WucDaemonRuntime.cs
+    │  poll next command on Editor update
+    ▼
+CSharpScriptRunner.cs  (Roslyn on Unity main thread)
     ▼
 Unity Engine / Editor API
 ```
 
-The server starts automatically when Unity loads the project. Claude Code talks to it via the bundled skill.
+The native daemon starts automatically when Unity loads the project. Claude Code talks to the Rust control plane via the bundled skill.
 
 ## Setup
 
@@ -45,7 +48,7 @@ The skill auto-reads this `projectId` override when present.
 
 ### Native runtime build (Rust + DllImport)
 
-The daemon runtime is now implemented in Rust (`native/wuc_daemon_runtime`) and loaded via C# `DllImport("wuc_daemon_runtime")`.
+The control plane now lives in Rust (`native/wuc_daemon_runtime`) and is loaded via C# `DllImport("wuc_daemon_runtime")`.
 Build the dynamic library and place it under `Assets/Editor/Wuc/Plugins/` with platform naming:
 
 - macOS: `libwuc_daemon_runtime.dylib`
@@ -85,12 +88,12 @@ show me the last 20 Unity logs
 
 Claude Code will invoke the `wuc` skill automatically when you ask it to interact with Unity.
 
-> Note: `.claude/skills/wuc/wuc.py` is only a one-shot CLI client. It is **not** the native core and does not provide persistent polling/hosting. The nativeization target is a long-lived out-of-process daemon (Rust/C++/Go) that owns the stable endpoint.
+> Note: `.claude/skills/wuc/wuc.py` is only a one-shot CLI client. It is **not** the native core and does not provide persistent polling/hosting. The stable endpoint is owned by the Rust runtime inside `wuc_daemon_runtime`.
 
 ## HTTP API (dynamic port)
 
 The skill discovers Unity via `~/.wuc/instances/*.json`, verifies identity via `/identity`,
-then calls the HTTP API:
+then calls the Rust-owned HTTP API:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -100,10 +103,6 @@ then calls the HTTP API:
 | `/logs` | GET | Fetch recent log entries (`?count=N`, default 100) from `Temp/wuc.log` |
 | `/logs/clear` | POST | Clear all entries from `Temp/wuc.log` |
 | `/logs/clear-before` | POST | Remove entries earlier than a given timestamp |
-| `/daemon/dispatch` | POST | Transport-agnostic bridge for native daemon command forwarding |
-| `/daemon/drain` | POST | Drain buffered daemon commands (for BufferIfUnready mode) |
-| `/daemon/queue` | GET | Queue depth/state for daemon runtime |
-
 Use `/logs/clear` when an agent needs a truly clean slate before deciding whether a fresh compile produced errors. Use `/logs/clear-before` for incremental consumption after recording a `timestampUtc` from `/logs`.
 
 ### `/logs/clear-before` request
@@ -135,22 +134,6 @@ Use `/logs/clear` when an agent needs a truly clean slate before deciding whethe
 
 
 
-### `/daemon/dispatch` request
-
-```json
-{
-  "path": "/execute",
-  "body": "{\"code\":\"return Application.isPlaying;\",\"requestId\":\"cmd-1\"}",
-  "mode": "buffer_if_unready",
-  "requestId": "cmd-1",
-  "requestClass": "must-run-once"
-}
-```
-
-- `mode` supports:
-  - `reject_if_unready` (default): return retryable error during reload.
-  - `buffer_if_unready`: enqueue command and execute later via `/daemon/drain`.
-
 ## C# Scripting
 
 Scripts run via Roslyn on the **Unity main thread**. The following namespaces are injected as default `using` statements into every script — agents do not need to add them explicitly:
@@ -166,10 +149,12 @@ The last expression in the script is returned as `returnValue`.
 
 | Path | Role |
 |------|------|
-| `Assets/Editor/Wuc/WucServer.cs` | HTTP server, route dispatch, main-thread queue |
+| `Assets/Editor/Wuc/WucServer.cs` | Unity bootstrap + execute response shaping |
+| `Assets/Editor/Wuc/WucDaemonRuntime.cs` | Managed/native bridge, command polling, reload state |
 | `Assets/Editor/Wuc/WucSettings.cs` | Project settings (port range and project ID override) |
 | `Assets/Editor/Wuc/CSharpScriptRunner.cs` | Roslyn executor, append-only `Temp/wuc.log` persistence |
 | `Assets/Editor/Wuc/Plugins/` | Roslyn DLLs + System.Text.Json (bundled) |
+| `native/wuc_daemon_runtime/` | Rust HTTP server, logs, request queue, idempotency store |
 | `.claude/skills/wuc/` | Claude Code skill (copy to `~/.claude/skills/`) |
 
 ## Domain Reload Resilience (Native Core Exploration)
@@ -178,18 +163,14 @@ When Unity performs a domain reload, managed static state is rebuilt. Because `W
 
 Recommended direction (incremental):
 
-1. **In-process native daemon host (current implementation direction)**
-   - Native host can live inside Unity process (outside managed AppDomain), keeping transport/control-plane alive across C# domain reload.
-   - Managed side is reduced to a command router + main-thread executor.
-   - Wuc now exposes transport-agnostic command routing (`/daemon/dispatch`) so native host can forward core routes (`/execute`, `/logs`, `/identity`, `/health`) through one bridge.
-2. **Phase 1 (implemented): protocol + state semantics**
-   - `requestId` idempotency for `/execute`.
-   - `/health` + daemon state (`ready`/`reloading`) and queue depth for deterministic retry logic.
-3. **Phase 2 (implemented): daemon runtime + buffering**
-   - Added daemon runtime state machine tied to Unity compile/reload lifecycle.
-   - Added queueing via `/daemon/dispatch` (`buffer_if_unready`) and explicit draining via `/daemon/drain`.
-4. **Phase 3 (implemented): core route bridging**
-   - Core routes (`/execute`, `/logs`, `/identity`, `/health`, clear APIs) are routable through transport-agnostic daemon router.
-   - Added `/daemon/queue` operational introspection endpoint.
+1. **Rust owns the control plane**
+   - HTTP listener, request queue, idempotency, health, and log storage all live in the native runtime.
+   - The native runtime persists across managed domain reloads.
+2. **Managed Unity code is only the executor**
+   - `WucDaemonRuntime` polls pending commands from the native queue on `EditorApplication.update`.
+   - `CSharpScriptRunner` runs the script on the Unity main thread and sends the result back to Rust.
+3. **Logs are forwarded into Rust**
+   - Unity log callbacks still persist to `Temp/wuc.log` for local inspection.
+   - The control plane’s `/logs` APIs read from the Rust-owned in-memory log buffer.
 
-This keeps managed Unity code focused on main-thread execution while letting an in-process native host own the control-plane behavior.
+This keeps managed Unity code focused on main-thread execution while the native runtime owns availability and retry behavior.
