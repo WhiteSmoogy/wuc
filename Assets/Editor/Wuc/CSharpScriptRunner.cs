@@ -61,7 +61,7 @@ namespace Wuc
         static CSharpScriptRunner()
         {
             EnsureLogFileDirectory();
-            Application.logMessageReceived += OnPersistentLogReceived;
+            Application.logMessageReceivedThreaded += OnPersistentLogReceived;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
         }
@@ -146,13 +146,16 @@ namespace Wuc
 
         private static void OnPersistentLogReceived(string condition, string stackTrace, LogType type)
         {
-            AppendLogEntry(new LogEntry
+            var entry = new LogEntry
             {
-                Timestamp = DateTime.Now,
+                Timestamp = DateTime.UtcNow,
                 Type = type,
                 Message = condition,
                 StackTrace = stackTrace,
-            });
+            };
+
+            AppendLogEntry(entry);
+            WucDaemonRuntime.RecordLog(entry);
         }
 
         // ── Roslyn state ───────────────────────────────────────────────────
@@ -169,7 +172,7 @@ namespace Wuc
         private static void OnBeforeAssemblyReload()
         {
             Debug.Log("Assembly reload detected, clearing Roslyn state.");
-            Application.logMessageReceived -= OnPersistentLogReceived;
+            Application.logMessageReceivedThreaded -= OnPersistentLogReceived;
             AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeAssemblyReload;
             CompilationPipeline.compilationStarted -= OnCompilationStarted;
             DisposeRoslynState();

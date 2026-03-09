@@ -1,8 +1,8 @@
 using System;
-using System.Collections.Generic;
 using System.Text.Json;
 using UnityEditor;
 using UnityEditor.Compilation;
+using UnityEngine;
 
 namespace Wuc
 {
@@ -12,17 +12,13 @@ namespace Wuc
         Reloading,
     }
 
-    internal enum WucDispatchMode
-    {
-        RejectIfUnready,
-        BufferIfUnready,
-    }
-
     internal static class WucDaemonRuntime
     {
         private const int MaxQueueSize = 256;
-        private static bool _nativeReady;
+        private const int MaxCommandsPerUpdate = 8;
+
         private static bool _initialized;
+        private static bool _nativeReady;
 
         internal static void Initialize()
         {
@@ -33,174 +29,149 @@ namespace Wuc
             _nativeReady = WucNativeDaemonBridge.TryInit(MaxQueueSize);
             if (!_nativeReady)
             {
-                UnityEngine.Debug.LogWarning("[Wuc] Native daemon runtime not found (wuc_daemon_runtime). /daemon buffering disabled.");
+                Debug.LogWarning("[Wuc] Native daemon runtime not found (wuc_daemon_runtime). Wuc control plane disabled.");
                 return;
             }
+
+            AttachManaged();
+
+            EditorApplication.update += PumpCommands;
+            AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+            AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
+            CompilationPipeline.compilationStarted += OnCompilationStarted;
+            EditorApplication.quitting += OnEditorQuitting;
 
             WucNativeDaemonBridge.SetState(EditorApplication.isCompiling ? WucDaemonState.Reloading : WucDaemonState.Ready);
-            CompilationPipeline.compilationStarted += OnCompilationStarted;
-            CompilationPipeline.compilationFinished += OnCompilationFinished;
         }
 
-        internal static void Shutdown()
+        internal static NativeIdentity GetIdentity()
         {
-            if (!_initialized)
+            var json = WucNativeDaemonBridge.IdentityJson();
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
+            try
+            {
+                return JsonSerializer.Deserialize<NativeIdentity>(
+                    json,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        internal static void RecordLog(LogEntry entry)
+        {
+            if (!_nativeReady)
                 return;
 
-            _initialized = false;
-            CompilationPipeline.compilationStarted -= OnCompilationStarted;
-            CompilationPipeline.compilationFinished -= OnCompilationFinished;
-
-            if (_nativeReady)
-                WucNativeDaemonBridge.Shutdown();
-
-            _nativeReady = false;
+            WucNativeDaemonBridge.RecordLog(entry);
         }
 
-        internal static string CurrentState => !_nativeReady
-            ? "reloading"
-            : (WucNativeDaemonBridge.CurrentState() == WucDaemonState.Ready ? "ready" : "reloading");
-
-        internal static int QueueDepth => !_nativeReady ? 0 : WucNativeDaemonBridge.QueueDepth();
-
-        internal static object DispatchOrQueue(
-            string path,
-            string body,
-            string requestId,
-            string requestClass,
-            WucDispatchMode mode,
-            Func<Func<object>, object> onMainThread)
+        private static void AttachManaged()
         {
-            if (!_nativeReady)
+            var settings = WucSettings.LoadOrCreate();
+            var projectPath = WucSettings.NormalizeProjectPath(System.IO.Path.Combine(Application.dataPath, ".."));
+            var projectId = settings.ResolveProjectId(projectPath);
+            var nowUtc = DateTime.UtcNow.ToString("O");
+            var port = WucNativeDaemonBridge.AttachManaged(
+                projectId,
+                projectPath,
+                System.Diagnostics.Process.GetCurrentProcess().Id,
+                settings.PortRangeStart,
+                settings.PortRangeEnd,
+                nowUtc,
+                nowUtc);
+
+            if (port <= 0)
             {
-                return new
-                {
-                    ok = false,
-                    retryable = true,
-                    state = "reloading",
-                    error = "native daemon runtime unavailable",
-                    requestId,
-                    requestClass,
-                };
+                _nativeReady = false;
+                Debug.LogError("[Wuc] Native daemon runtime failed to start its HTTP server.");
             }
-
-            if (WucNativeDaemonBridge.CurrentState() == WucDaemonState.Ready)
-                return WucDaemonCommandRouter.Dispatch(path, body, onMainThread);
-
-            if (mode == WucDispatchMode.BufferIfUnready)
-            {
-                var accepted = WucNativeDaemonBridge.Enqueue(path, body, requestId, requestClass);
-                return new
-                {
-                    ok = accepted,
-                    accepted,
-                    buffered = accepted,
-                    state = CurrentState,
-                    queueDepth = QueueDepth,
-                    requestId,
-                    requestClass,
-                    error = accepted ? null : "daemon queue is full or unavailable",
-                };
-            }
-
-            return new
-            {
-                ok = false,
-                retryable = true,
-                state = CurrentState,
-                error = "daemon runtime is reloading; retry later or use BufferIfUnready",
-                requestId,
-                requestClass,
-            };
         }
 
-        internal static object Drain(int maxCount, Func<Func<object>, object> onMainThread)
+        private static void PumpCommands()
         {
-            if (!_nativeReady)
-            {
-                return new
-                {
-                    ok = false,
-                    state = "reloading",
-                    error = "native daemon runtime unavailable",
-                    drainedCount = 0,
-                    queueDepth = 0,
-                    drained = Array.Empty<object>(),
-                };
-            }
+            if (!_nativeReady || WucNativeDaemonBridge.CurrentState() != WucDaemonState.Ready)
+                return;
 
-            if (maxCount <= 0)
-                maxCount = 1;
-
-            var drained = new List<object>();
-            for (var i = 0; i < maxCount; i++)
+            for (var i = 0; i < MaxCommandsPerUpdate; i++)
             {
-                var json = WucNativeDaemonBridge.DequeueJson();
-                if (string.IsNullOrEmpty(json))
+                var commandJson = WucNativeDaemonBridge.DequeueCommandJson();
+                if (string.IsNullOrWhiteSpace(commandJson))
                     break;
 
-                DaemonQueuedCommand cmd;
+                QueuedCommand command;
                 try
                 {
-                    cmd = JsonSerializer.Deserialize<DaemonQueuedCommand>(json,
+                    command = JsonSerializer.Deserialize<QueuedCommand>(
+                        commandJson,
                         new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
                 }
                 catch (Exception ex)
                 {
-                    drained.Add(new { ok = false, error = $"invalid queued payload: {ex.Message}" });
+                    Debug.LogWarning($"[Wuc] Failed to parse daemon command: {ex.Message}");
                     continue;
                 }
 
-                try
-                {
-                    var result = WucDaemonCommandRouter.Dispatch(cmd.path, cmd.body, onMainThread);
-                    drained.Add(new { ok = true, requestId = cmd.requestId, requestClass = cmd.requestClass, result });
-                }
-                catch (Exception ex)
-                {
-                    drained.Add(new { ok = false, requestId = cmd.requestId, requestClass = cmd.requestClass, error = ex.Message });
-                }
+                if (command == null || command.commandId == 0)
+                    continue;
+
+                var responseJson = WucDaemonCommandRouter.DispatchToJson(command.path, command.body);
+                WucNativeDaemonBridge.CompleteCommand(command.commandId, responseJson);
             }
-
-            return new
-            {
-                ok = true,
-                state = CurrentState,
-                drainedCount = drained.Count,
-                queueDepth = QueueDepth,
-                drained,
-            };
         }
 
-        internal static object QueueStats()
-        {
-            return new
-            {
-                state = CurrentState,
-                queueDepth = QueueDepth,
-                maxQueueSize = MaxQueueSize,
-                nativeRuntimeLoaded = _nativeReady,
-            };
-        }
-
-        private static void OnCompilationStarted(object obj)
+        private static void OnCompilationStarted(object _)
         {
             if (_nativeReady)
                 WucNativeDaemonBridge.SetState(WucDaemonState.Reloading);
         }
 
-        private static void OnCompilationFinished(object obj)
+        private static void OnBeforeAssemblyReload()
         {
             if (_nativeReady)
-                WucNativeDaemonBridge.SetState(WucDaemonState.Ready);
+                WucNativeDaemonBridge.SetState(WucDaemonState.Reloading);
         }
 
-        private class DaemonQueuedCommand
+        private static void OnAfterAssemblyReload()
         {
+            if (!_nativeReady)
+                return;
+
+            AttachManaged();
+            WucNativeDaemonBridge.SetState(EditorApplication.isCompiling ? WucDaemonState.Reloading : WucDaemonState.Ready);
+        }
+
+        private static void OnEditorQuitting()
+        {
+            if (!_nativeReady)
+                return;
+
+            WucNativeDaemonBridge.Shutdown();
+            _nativeReady = false;
+        }
+
+        internal sealed class NativeIdentity
+        {
+            public string projectId { get; set; }
+            public string projectPath { get; set; }
+            public string instanceId { get; set; }
+            public string processBootId { get; set; }
+            public int pid { get; set; }
+            public int port { get; set; }
+            public string startedAtUtc { get; set; }
+            public string updatedAtUtc { get; set; }
+            public string status { get; set; }
+        }
+
+        private sealed class QueuedCommand
+        {
+            public ulong commandId { get; set; }
             public string path { get; set; }
             public string body { get; set; }
-            public string requestId { get; set; }
-            public string requestClass { get; set; }
         }
     }
 }
