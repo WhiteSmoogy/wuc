@@ -6,6 +6,7 @@ import json
 import argparse
 import hashlib
 import os
+import uuid
 from pathlib import Path
 import urllib.request
 import urllib.error
@@ -222,6 +223,11 @@ def main():
                    help="Virtual script path shown in stack traces")
     p.add_argument("--timeout", type=int, default=30_000,
                    help="Execution timeout in ms (default: 30000)")
+    p.add_argument(
+        "--request-id",
+        default=None,
+        help="Idempotency key for execute. Default: auto-generated UUID.",
+    )
 
     # ── logs ─────────────────────────────────────────────────────────────
     p = sub.add_parser("logs", help="Get recent Unity log entries")
@@ -236,6 +242,7 @@ def main():
         help="Delete logs earlier than this timestamp (ISO 8601 recommended, e.g. 2026-03-08T12:34:56.789Z)",
     )
     sub.add_parser("identity", help="Get the selected Unity instance identity")
+    sub.add_parser("health", help="Get server readiness and boot id")
 
     args = ap.parse_args()
     project_path = args.project_path or os.getcwd()
@@ -245,10 +252,19 @@ def main():
         base = pick_target_base(project_id, args.instance_id)
 
         if args.action == "execute":
+            request_id = args.request_id or str(uuid.uuid4())
+            payload = {
+                "code": args.code,
+                "scriptPath": args.path,
+                "timeoutMs": args.timeout,
+                "requestId": request_id,
+            }
             result = call(
-                base, "POST", "/execute",
-                {"code": args.code, "scriptPath": args.path, "timeoutMs": args.timeout},
-                timeout=args.timeout / 1000 + 5,  # Slightly longer than script timeout.
+                base,
+                "POST",
+                "/execute",
+                payload,
+                timeout=args.timeout / 1000 + 5,
             )
 
         elif args.action == "logs":
@@ -268,6 +284,9 @@ def main():
 
         elif args.action == "identity":
             result = call(base, "GET", "/identity", timeout=5)
+
+        elif args.action == "health":
+            result = call(base, "GET", "/health", timeout=5)
 
     except WucError as e:
         sys.exit(f"[wuc] {e}")

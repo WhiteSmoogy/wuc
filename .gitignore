@@ -16,3 +16,8 @@
 !.claude/skills/
 !.claude/skills/wuc/
 !.claude/skills/wuc/**
+
+# Native daemon runtime (Rust)
+!native/
+!native/wuc_daemon_runtime/
+!native/wuc_daemon_runtime/**

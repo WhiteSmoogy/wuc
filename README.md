@@ -42,6 +42,25 @@ By default Wuc scans an available port in the range `23557-23657`.
 You can configure range (and optional `projectId` override) in `ProjectSettings/WucSettings.asset`.
 The skill auto-reads this `projectId` override when present.
 
+
+### Native runtime build (Rust + DllImport)
+
+The daemon runtime is now implemented in Rust (`native/wuc_daemon_runtime`) and loaded via C# `DllImport("wuc_daemon_runtime")`.
+Build the dynamic library and place it under `Assets/Editor/Wuc/Plugins/` with platform naming:
+
+- macOS: `libwuc_daemon_runtime.dylib`
+- Linux: `libwuc_daemon_runtime.so`
+- Windows: `wuc_daemon_runtime.dll`
+
+Example:
+
+```bash
+cd native/wuc_daemon_runtime
+cargo build --release
+```
+
+Then copy the produced artifact from `target/release/` into `Assets/Editor/Wuc/Plugins/`.
+
 ### 2. Install the Claude Code skill
 
 Copy the skill into your user-level Claude skills directory so Claude Code can find it:
@@ -66,6 +85,8 @@ show me the last 20 Unity logs
 
 Claude Code will invoke the `wuc` skill automatically when you ask it to interact with Unity.
 
+> Note: `.claude/skills/wuc/wuc.py` is only a one-shot CLI client. It is **not** the native core and does not provide persistent polling/hosting. The nativeization target is a long-lived out-of-process daemon (Rust/C++/Go) that owns the stable endpoint.
+
 ## HTTP API (dynamic port)
 
 The skill discovers Unity via `~/.wuc/instances/*.json`, verifies identity via `/identity`,
@@ -74,10 +95,14 @@ then calls the HTTP API:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/identity` | GET | Return `{ projectId, projectPath, instanceId, pid, port, startedAtUtc }` |
+| `/health` | GET | Return readiness + boot identity for reconnect logic |
 | `/execute` | POST | Run C# code on the Unity main thread |
 | `/logs` | GET | Fetch recent log entries (`?count=N`, default 100) from `Temp/wuc.log` |
 | `/logs/clear` | POST | Clear all entries from `Temp/wuc.log` |
 | `/logs/clear-before` | POST | Remove entries earlier than a given timestamp |
+| `/daemon/dispatch` | POST | Transport-agnostic bridge for native daemon command forwarding |
+| `/daemon/drain` | POST | Drain buffered daemon commands (for BufferIfUnready mode) |
+| `/daemon/queue` | GET | Queue depth/state for daemon runtime |
 
 Use `/logs/clear` when an agent needs a truly clean slate before deciding whether a fresh compile produced errors. Use `/logs/clear-before` for incremental consumption after recording a `timestampUtc` from `/logs`.
 
@@ -90,7 +115,7 @@ Use `/logs/clear` when an agent needs a truly clean slate before deciding whethe
 ### `/execute` request
 
 ```json
-{ "code": "return Application.unityVersion;", "scriptPath": "label.csx", "timeoutMs": 30000 }
+{ "code": "return Application.unityVersion;", "scriptPath": "label.csx", "timeoutMs": 30000, "requestId": "uuid" }
 ```
 
 ### `/execute` response
@@ -98,13 +123,33 @@ Use `/logs/clear` when an agent needs a truly clean slate before deciding whethe
 ```json
 {
   "success": true,
+  "requestId": "uuid",
   "returnValue": { "type": "System.String", "content": "6000.0.60f1" },
-  "output": "",
   "logs": [],
   "executionTimeMs": 42.3,
   "error": null
 }
 ```
+
+`requestId` can be used as an idempotency key. Re-sending the same `requestId` shortly after a transient disconnect (for example during domain reload) will return the cached first result instead of re-running side effects.
+
+
+
+### `/daemon/dispatch` request
+
+```json
+{
+  "path": "/execute",
+  "body": "{\"code\":\"return Application.isPlaying;\",\"requestId\":\"cmd-1\"}",
+  "mode": "buffer_if_unready",
+  "requestId": "cmd-1",
+  "requestClass": "must-run-once"
+}
+```
+
+- `mode` supports:
+  - `reject_if_unready` (default): return retryable error during reload.
+  - `buffer_if_unready`: enqueue command and execute later via `/daemon/drain`.
 
 ## C# Scripting
 
@@ -126,3 +171,25 @@ The last expression in the script is returned as `returnValue`.
 | `Assets/Editor/Wuc/CSharpScriptRunner.cs` | Roslyn executor, append-only `Temp/wuc.log` persistence |
 | `Assets/Editor/Wuc/Plugins/` | Roslyn DLLs + System.Text.Json (bundled) |
 | `.claude/skills/wuc/` | Claude Code skill (copy to `~/.claude/skills/`) |
+
+## Domain Reload Resilience (Native Core Exploration)
+
+When Unity performs a domain reload, managed static state is rebuilt. Because `WucServer` currently lives in managed Editor code (`[InitializeOnLoad]`), there is a short control-plane downtime window while the listener restarts. This is especially visible for workflows like **start game** then immediately issuing follow-up commands.
+
+Recommended direction (incremental):
+
+1. **In-process native daemon host (current implementation direction)**
+   - Native host can live inside Unity process (outside managed AppDomain), keeping transport/control-plane alive across C# domain reload.
+   - Managed side is reduced to a command router + main-thread executor.
+   - Wuc now exposes transport-agnostic command routing (`/daemon/dispatch`) so native host can forward core routes (`/execute`, `/logs`, `/identity`, `/health`) through one bridge.
+2. **Phase 1 (implemented): protocol + state semantics**
+   - `requestId` idempotency for `/execute`.
+   - `/health` + daemon state (`ready`/`reloading`) and queue depth for deterministic retry logic.
+3. **Phase 2 (implemented): daemon runtime + buffering**
+   - Added daemon runtime state machine tied to Unity compile/reload lifecycle.
+   - Added queueing via `/daemon/dispatch` (`buffer_if_unready`) and explicit draining via `/daemon/drain`.
+4. **Phase 3 (implemented): core route bridging**
+   - Core routes (`/execute`, `/logs`, `/identity`, `/health`, clear APIs) are routable through transport-agnostic daemon router.
+   - Added `/daemon/queue` operational introspection endpoint.
+
+This keeps managed Unity code focused on main-thread execution while letting an in-process native host own the control-plane behavior.

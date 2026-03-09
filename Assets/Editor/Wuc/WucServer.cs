@@ -7,6 +7,7 @@ using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
@@ -21,6 +22,7 @@ namespace Wuc
         private static string       _projectId;
         private static string       _projectPath;
         private static string       _instanceId;
+        private static readonly string _processBootId = Guid.NewGuid().ToString("N");
         private static int          _processId;
         private static DateTime     _startedAtUtc;
         private static string       _registrationFilePath;
@@ -29,11 +31,18 @@ namespace Wuc
         private static readonly ConcurrentQueue<(Action work, ManualResetEventSlim gate)>
             _mainThreadQueue = new ConcurrentQueue<(Action, ManualResetEventSlim)>();
 
+        // requestId 去重缓存：同一个 requestId 短时间内重复调用时返回首次结果。
+        private static readonly object _executeCacheLock = new object();
+        private static readonly Dictionary<string, ExecuteCacheEntry> _executeCache =
+            new Dictionary<string, ExecuteCacheEntry>();
+        private static readonly TimeSpan _executeCacheTtl = TimeSpan.FromMinutes(2);
+
         static WucServer()
         {
             EditorApplication.update += DrainMainThreadQueue;
             AssemblyReloadEvents.beforeAssemblyReload += Shutdown;
             EditorApplication.quitting += Shutdown;
+            WucDaemonRuntime.Initialize();
             StartServer();
         }
 
@@ -88,6 +97,7 @@ namespace Wuc
             _listener = null;
             _boundPort = 0;
             RemoveRegistrationFile();
+            WucDaemonRuntime.Shutdown();
         }
 
         // ── 主线程调度 ──────────────────────────────────────────────────────
@@ -154,8 +164,11 @@ namespace Wuc
                 object result;
                 switch (path)
                 {
+                    case "/health":
+                        result = BuildHealthPayload();
+                        break;
                     case "/identity":
-                        result = HandleIdentity();
+                        result = BuildIdentityPayload();
                         break;
                     case "/execute":
                         result = HandleExecute(body);
@@ -168,6 +181,15 @@ namespace Wuc
                         break;
                     case "/logs/clear-before":
                         result = HandleClearLogsBefore(body);
+                        break;
+                    case "/daemon/dispatch":
+                        result = HandleDaemonDispatch(body);
+                        break;
+                    case "/daemon/drain":
+                        result = HandleDaemonDrain(body);
+                        break;
+                    case "/daemon/queue":
+                        result = WucDaemonRuntime.QueueStats();
                         break;
                     default:
                         resp.StatusCode = 404;
@@ -195,7 +217,7 @@ namespace Wuc
 
         // ── Route handlers ─────────────────────────────────────────────────
 
-        private static object HandleIdentity()
+        internal static object BuildIdentityPayload()
         {
             return new
             {
@@ -205,6 +227,21 @@ namespace Wuc
                 pid = _processId,
                 port = _boundPort,
                 startedAtUtc = _startedAtUtc.ToString("O"),
+                processBootId = _processBootId,
+            };
+        }
+
+        internal static object BuildHealthPayload()
+        {
+            return new
+            {
+                status = WucDaemonRuntime.CurrentState,
+                projectId = _projectId,
+                instanceId = _instanceId,
+                processBootId = _processBootId,
+                startedAtUtc = _startedAtUtc.ToString("O"),
+                daemonState = WucDaemonRuntime.CurrentState,
+                queueDepth = WucDaemonRuntime.QueueDepth,
             };
         }
 
@@ -214,23 +251,85 @@ namespace Wuc
                 body,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-            var r = OnMainThread(() => CSharpScriptRunner.Execute(
+            if (req == null || string.IsNullOrWhiteSpace(req.code))
+                throw new ArgumentException("Missing 'code'.");
+
+            return ExecuteWithIdempotency(req, () => OnMainThread(() => CSharpScriptRunner.Execute(
                 req.code,
                 req.scriptPath,
-                req.timeoutMs > 0 ? req.timeoutMs : 30_000));
+                req.timeoutMs > 0 ? req.timeoutMs : 30_000)));
+        }
 
-            // Keep execute responses concise: status, return value, logs, and timing.
-            return new
+        internal static object ExecuteWithIdempotency(ExecuteRequest req, Func<ExecutionResult> execute)
+        {
+            CleanupExecuteCache();
+            var requestId = string.IsNullOrWhiteSpace(req.requestId)
+                ? null
+                : req.requestId.Trim();
+
+            if (!string.IsNullOrEmpty(requestId) && TryGetCachedExecuteResult(requestId, out var cached))
+                return cached;
+
+            var r = execute();
+
+            var response = new
             {
                 success         = r.Success,
                 returnValue     = BuildReturnValue(r.ReturnValue),
                 error           = r.Error,
                 logs            = r.Logs,
                 executionTimeMs = r.ExecutionTimeMs,
+                requestId,
             };
+
+            if (!string.IsNullOrEmpty(requestId))
+                CacheExecuteResult(requestId, response);
+
+            return response;
         }
 
-        private static object BuildReturnValue(object value)
+        private static bool TryGetCachedExecuteResult(string requestId, out object response)
+        {
+            lock (_executeCacheLock)
+            {
+                if (_executeCache.TryGetValue(requestId, out var entry) && entry.ExpiresAtUtc > DateTime.UtcNow)
+                {
+                    response = entry.Response;
+                    return true;
+                }
+            }
+
+            response = null;
+            return false;
+        }
+
+        private static void CacheExecuteResult(string requestId, object response)
+        {
+            lock (_executeCacheLock)
+            {
+                _executeCache[requestId] = new ExecuteCacheEntry
+                {
+                    Response = response,
+                    ExpiresAtUtc = DateTime.UtcNow.Add(_executeCacheTtl),
+                };
+            }
+        }
+
+        private static void CleanupExecuteCache()
+        {
+            var now = DateTime.UtcNow;
+            lock (_executeCacheLock)
+            {
+                var expiredKeys = _executeCache
+                    .Where(kv => kv.Value.ExpiresAtUtc <= now)
+                    .Select(kv => kv.Key)
+                    .ToList();
+                foreach (var key in expiredKeys)
+                    _executeCache.Remove(key);
+            }
+        }
+
+        internal static object BuildReturnValue(object value)
         {
             if (value == null) return null;
 
@@ -297,6 +396,41 @@ namespace Wuc
                 before = cutoff.ToUniversalTime().ToString("O"),
                 removedCount,
             };
+        }
+
+        private static object HandleDaemonDispatch(string body)
+        {
+            var req = JsonSerializer.Deserialize<DaemonDispatchRequest>(
+                body,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
+            if (req == null || string.IsNullOrWhiteSpace(req.path))
+                throw new ArgumentException("Missing 'path'.");
+
+            var mode = ParseDispatchMode(req.mode);
+            return WucDaemonRuntime.DispatchOrQueue(
+                req.path,
+                req.body ?? string.Empty,
+                req.requestId,
+                req.requestClass,
+                mode,
+                func => OnMainThread(func));
+        }
+
+        private static object HandleDaemonDrain(string body)
+        {
+            var req = JsonSerializer.Deserialize<DaemonDrainRequest>(
+                body,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? new DaemonDrainRequest();
+
+            return WucDaemonRuntime.Drain(req.maxCount <= 0 ? 32 : req.maxCount, func => OnMainThread(func));
+        }
+
+        private static WucDispatchMode ParseDispatchMode(string mode)
+        {
+            if (string.Equals(mode, "buffer_if_unready", StringComparison.OrdinalIgnoreCase))
+                return WucDispatchMode.BufferIfUnready;
+            return WucDispatchMode.RejectIfUnready;
         }
 
         // ── Listener + registry ────────────────────────────────────────────
@@ -404,16 +538,37 @@ namespace Wuc
 
         // ── Request DTO ────────────────────────────────────────────────────
 
-        private class ExecuteRequest
+        internal class ExecuteRequest
         {
             public string code       { get; set; }
             public string scriptPath { get; set; }
             public int    timeoutMs  { get; set; } = 30_000;
+            public string requestId  { get; set; }
         }
 
-        private class ClearLogsBeforeRequest
+        private class ExecuteCacheEntry
+        {
+            public object Response { get; set; }
+            public DateTime ExpiresAtUtc { get; set; }
+        }
+
+        internal class ClearLogsBeforeRequest
         {
             public string before { get; set; }
+        }
+
+        private class DaemonDispatchRequest
+        {
+            public string path { get; set; }
+            public string body { get; set; }
+            public string mode { get; set; }
+            public string requestId { get; set; }
+            public string requestClass { get; set; }
+        }
+
+        private class DaemonDrainRequest
+        {
+            public int maxCount { get; set; } = 32;
         }
 
         private class RegistrationRecord
