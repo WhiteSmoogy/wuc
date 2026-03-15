@@ -57,11 +57,13 @@ namespace Wuc
         private static readonly object _roslynLock = new object();
         private static readonly UTF8Encoding Utf8WithoutBom = new UTF8Encoding(false);
         private static readonly string LogFilePath = GetLogFilePath();
+        private static bool _isShuttingDown;
 
         static CSharpScriptRunner()
         {
             EnsureLogFileDirectory();
             Application.logMessageReceivedThreaded += OnPersistentLogReceived;
+            EditorApplication.quitting += OnEditorQuitting;
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
         }
@@ -146,6 +148,9 @@ namespace Wuc
 
         private static void OnPersistentLogReceived(string condition, string stackTrace, LogType type)
         {
+            if (_isShuttingDown)
+                return;
+
             var entry = new LogEntry
             {
                 Timestamp = DateTime.UtcNow,
@@ -156,6 +161,12 @@ namespace Wuc
 
             AppendLogEntry(entry);
             WucDaemonRuntime.RecordLog(entry);
+        }
+
+        private static void OnEditorQuitting()
+        {
+            _isShuttingDown = true;
+            UnsubscribeLifecycleCallbacks();
         }
 
         // ── Roslyn state ───────────────────────────────────────────────────
@@ -172,10 +183,16 @@ namespace Wuc
         private static void OnBeforeAssemblyReload()
         {
             Debug.Log("Assembly reload detected, clearing Roslyn state.");
+            UnsubscribeLifecycleCallbacks();
+            DisposeRoslynState();
+        }
+
+        private static void UnsubscribeLifecycleCallbacks()
+        {
             Application.logMessageReceivedThreaded -= OnPersistentLogReceived;
+            EditorApplication.quitting -= OnEditorQuitting;
             AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeAssemblyReload;
             CompilationPipeline.compilationStarted -= OnCompilationStarted;
-            DisposeRoslynState();
         }
 
         private static void OnCompilationStarted(object context)
