@@ -14,6 +14,7 @@ namespace Wuc
         private static extern int wuc_daemon_attach_managed(
             [MarshalAs(UnmanagedType.LPUTF8Str)] string projectId,
             [MarshalAs(UnmanagedType.LPUTF8Str)] string projectPath,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string registryDir,
             int pid,
             int portRangeStart,
             int portRangeEnd,
@@ -65,6 +66,7 @@ namespace Wuc
         internal static int AttachManaged(
             string projectId,
             string projectPath,
+            string registryDir,
             int pid,
             int portRangeStart,
             int portRangeEnd,
@@ -76,6 +78,7 @@ namespace Wuc
                 return wuc_daemon_attach_managed(
                     projectId ?? string.Empty,
                     projectPath ?? string.Empty,
+                    registryDir ?? string.Empty,
                     pid,
                     portRangeStart,
                     portRangeEnd,

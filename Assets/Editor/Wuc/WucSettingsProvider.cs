@@ -39,10 +39,7 @@ namespace Wuc
             var effectiveProjectId = settings.ResolveProjectId(projectPath);
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Resolved Project ID", effectiveProjectId);
-            EditorGUILayout.LabelField("Registry Directory", Path.Combine(
-                System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile),
-                ".wuc",
-                "instances"));
+            EditorGUILayout.LabelField("Registry Directory", WucSettings.ResolveRegistryDirectory());
         }
     }
 }

@@ -40,6 +40,7 @@ struct ServerState {
 struct Metadata {
     project_id: String,
     project_path: String,
+    registry_dir: String,
     instance_id: String,
     process_boot_id: String,
     pid: u32,
@@ -168,15 +169,30 @@ fn cleanup_request_cache(rt: &mut Runtime) {
     }
 }
 
-fn registry_file_path(instance_id: &str) -> Option<String> {
+fn default_registry_directory() -> Option<String> {
     let home = env::var("USERPROFILE")
         .ok()
         .or_else(|| env::var("HOME").ok())?;
-    Some(format!("{home}\\.wuc\\instances\\{instance_id}.json"))
+    Some(format!("{home}\\.wuc\\instances"))
+}
+
+fn registry_file_path(registry_dir: &str, instance_id: &str) -> Option<String> {
+    let dir = if registry_dir.trim().is_empty() {
+        default_registry_directory()?
+    } else {
+        registry_dir.to_string()
+    };
+
+    Some(
+        std::path::Path::new(&dir)
+            .join(format!("{instance_id}.json"))
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 fn write_registration_file(metadata: &Metadata) {
-    let Some(path) = registry_file_path(&metadata.instance_id) else {
+    let Some(path) = registry_file_path(&metadata.registry_dir, &metadata.instance_id) else {
         return;
     };
 
@@ -203,8 +219,8 @@ fn write_registration_file(metadata: &Metadata) {
     let _ = fs::write(path, json);
 }
 
-fn remove_registration_file(instance_id: &str) {
-    let Some(path) = registry_file_path(instance_id) else {
+fn remove_registration_file(registry_dir: &str, instance_id: &str) {
+    let Some(path) = registry_file_path(registry_dir, instance_id) else {
         return;
     };
     let _ = fs::remove_file(path);
@@ -663,6 +679,7 @@ pub extern "C" fn wuc_daemon_init(max_queue_size: i32) -> i32 {
 pub extern "C" fn wuc_daemon_attach_managed(
     project_id: *const c_char,
     project_path: *const c_char,
+    registry_dir: *const c_char,
     pid: i32,
     port_range_start: i32,
     port_range_end: i32,
@@ -677,6 +694,7 @@ pub extern "C" fn wuc_daemon_attach_managed(
     rt.shutting_down = false;
     rt.metadata.project_id = cstr_to_string(project_id);
     rt.metadata.project_path = cstr_to_string(project_path);
+    rt.metadata.registry_dir = cstr_to_string(registry_dir);
     rt.metadata.pid = pid.max(0) as u32;
     if rt.metadata.instance_id.is_empty() {
         rt.metadata.instance_id = generate_hex_id();
@@ -714,7 +732,7 @@ pub extern "C" fn wuc_daemon_shutdown() {
     let mut guard = runtime().lock().expect("runtime mutex poisoned");
     if let Some(rt) = guard.as_mut() {
         rt.shutting_down = true;
-        remove_registration_file(&rt.metadata.instance_id);
+        remove_registration_file(&rt.metadata.registry_dir, &rt.metadata.instance_id);
         rt.queue.clear();
         rt.in_flight.clear();
         rt.request_index.clear();

@@ -97,5 +97,14 @@ namespace Wuc
 
             return fullPath;
         }
+
+        internal static string ResolveRegistryDirectory()
+        {
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrWhiteSpace(userProfile))
+                return string.Empty;
+
+            return Path.Combine(userProfile, ".wuc", "instances");
+        }
     }
 }

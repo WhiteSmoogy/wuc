@@ -22,6 +22,9 @@ namespace Wuc
 
         internal static void Initialize()
         {
+            if (AssetDatabase.IsAssetImportWorkerProcess())
+                return;
+
             if (_initialized)
                 return;
 
@@ -39,6 +42,7 @@ namespace Wuc
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
             AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
             CompilationPipeline.compilationStarted += OnCompilationStarted;
+            CompilationPipeline.compilationFinished += OnCompilationFinished;
             EditorApplication.quitting += OnEditorQuitting;
 
             WucNativeDaemonBridge.SetState(EditorApplication.isCompiling ? WucDaemonState.Reloading : WucDaemonState.Ready);
@@ -75,10 +79,12 @@ namespace Wuc
             var settings = WucSettings.LoadOrCreate();
             var projectPath = WucSettings.NormalizeProjectPath(System.IO.Path.Combine(Application.dataPath, ".."));
             var projectId = settings.ResolveProjectId(projectPath);
+            var registryDir = WucSettings.ResolveRegistryDirectory();
             var nowUtc = DateTime.UtcNow.ToString("O");
             var port = WucNativeDaemonBridge.AttachManaged(
                 projectId,
                 projectPath,
+                registryDir,
                 System.Diagnostics.Process.GetCurrentProcess().Id,
                 settings.PortRangeStart,
                 settings.PortRangeEnd,
@@ -128,6 +134,12 @@ namespace Wuc
         {
             if (_nativeReady)
                 WucNativeDaemonBridge.SetState(WucDaemonState.Reloading);
+        }
+
+        private static void OnCompilationFinished(object _)
+        {
+            if (_nativeReady && !EditorApplication.isCompiling)
+                WucNativeDaemonBridge.SetState(WucDaemonState.Ready);
         }
 
         private static void OnBeforeAssemblyReload()
